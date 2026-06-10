@@ -29,7 +29,7 @@ load_dotenv()
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════
 
-API_KEY     = os.getenv("API_FOOTBALL_KEY", "")
+API_KEY     = os.getenv("API_FOOTBALL_KEY", "f57246df7fed5813319779ff23299665")
 BASE_URL    = "https://v3.football.api-sports.io"
 WC_LEAGUE   = 1
 WC_SEASON   = 2026
