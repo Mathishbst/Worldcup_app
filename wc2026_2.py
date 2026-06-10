@@ -255,18 +255,12 @@ def get_api_prediction(fixture_id: int) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 
 def _team_stats(team: str, history: dict, n: int = 10) -> dict:
-    """
-    Calcule les stats d'une équipe depuis l'historique.
-    Si peu de données → utilise le classement FIFA comme proxy.
-    Terrain neutre par défaut, sauf pays hôtes.
-    """
     games = history.get(team, [])[-n:]
     fifa  = _fifa_score(team)
     coach = _coach_score(team)
     host  = _host_boost(team)
 
     if not games:
-        # Valeurs initiales basées sur le classement FIFA
         scored = 0.7 + fifa * 1.5
         conc   = 1.7 - fifa * 1.3
         return dict(
@@ -275,31 +269,31 @@ def _team_stats(team: str, history: dict, n: int = 10) -> dict:
             conc   = max(0.3, conc),
             win    = 0.20 + fifa * 0.50,
             clean  = 0.08 + fifa * 0.37,
-            draw   = 0.28 - fifa * 0.08,   # les équipes faibles font plus de nuls
+            draw   = 0.28 - fifa * 0.08,
             gd     = scored - max(0.3, conc),
-            fifa   = fifa,
-            coach  = coach,
-            host   = host,
-            n      = 0,
+            fifa   = fifa, coach=coach, host=host, n=0,
         )
 
-    wsum = sum(g["w"] for g in games) or 1
-    # Mélange historique (80%) + FIFA (20%) pour lisser
-    hist_form = sum(g["pts"] * g["w"] for g in games) / wsum / 3
-    blended_form = hist_form * 0.80 + fifa * 0.20
+    # ── NOUVEAU : pondère chaque match par le niveau de l'adversaire ──
+    weighted_games = []
+    for g in games:
+        opp_fifa = g.get("opp_fifa", 0.3)   # niveau adversaire
+        # Poids = poids compétition × niveau adversaire (min 0.3)
+        quality_weight = g["w"] * max(0.3, opp_fifa)
+        weighted_games.append({**g, "qw": quality_weight})
+
+    qwsum = sum(g["qw"] for g in weighted_games) or 1
+    wsum  = sum(g["w"]  for g in weighted_games) or 1
 
     return dict(
-        form   = blended_form,
-        scored = np.mean([g["scored"] for g in games]),
-        conc   = np.mean([g["conc"]   for g in games]),
-        win    = np.mean([g["win"]    for g in games]),
-        clean  = np.mean([g["conc"] == 0 for g in games]),
-        draw   = np.mean([g["draw"]  for g in games]),
-        gd     = np.mean([g["scored"] - g["conc"] for g in games]),
-        fifa   = fifa,
-        coach  = coach,
-        host   = host,
-        n      = len(games),
+        form   = sum(g["pts"] * g["qw"] for g in weighted_games) / qwsum / 3,
+        scored = sum(g["scored"] * g["qw"] for g in weighted_games) / qwsum,
+        conc   = sum(g["conc"]   * g["qw"] for g in weighted_games) / qwsum,
+        win    = sum(g["win"]    * g["qw"] for g in weighted_games) / qwsum,
+        clean  = sum((g["conc"]==0) * g["qw"] for g in weighted_games) / qwsum,
+        draw   = sum(g["draw"]   * g["w"]  for g in weighted_games) / wsum,
+        gd     = sum((g["scored"]-g["conc"]) * g["qw"] for g in weighted_games) / qwsum,
+        fifa   = fifa, coach=coach, host=host, n=len(games),
     )
 
 
@@ -473,15 +467,17 @@ def load_and_train(results_path: str, fixtures_live: list) -> tuple:
 
         # Mise à jour historique
         g1, g2 = row["home_score"], row["away_score"]
-        for team, scored, conc, win in [
-            (t1, g1, g2, res=="H"),
-            (t2, g2, g1, res=="A"),
+        f# Remplace les deux lignes history.setdefault(...).append par :
+        for team, scored, conc, win, opponent in [
+            (t1, g1, g2, res=="H", t2),
+            (t2, g2, g1, res=="A", t1),
         ]:
             pts = 3 if ((team==t1 and res=="H") or (team==t2 and res=="A")) \
                   else (1 if res=="D" else 0)
             history.setdefault(team, []).append({
                 "pts": pts, "scored": scored, "conc": conc,
                 "win": int(win), "draw": int(res=="D"), "w": w,
+                "opp_fifa": _fifa_score(opponent),  # ← nouveau
             })
 
     X = pd.concat(X_rows, ignore_index=True)
